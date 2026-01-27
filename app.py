@@ -1,3 +1,4 @@
+# app.py
 
 import streamlit as st
 from source import *
@@ -13,13 +14,31 @@ import nest_asyncio
 nest_asyncio.apply()
 
 # --- Page Configuration ---
-st.set_page_config(page_title="QuLab: Lab 10: LangGraph Multi-Agent Orchestration", layout="wide")
+st.set_page_config(
+    page_title="QuLab: Lab 10: LangGraph Multi-Agent Orchestration", layout="wide")
 st.sidebar.image("https://www.quantuniversity.com/assets/img/logo5.jpg")
 st.sidebar.divider()
+
+# --- NEW: Sidebar OpenAI Key Input (Requirement #1) ---
+# Keep in session_state so graph can be (re)built when key changes.
+if "openai_api_key_input" not in st.session_state:
+    st.session_state["openai_api_key_input"] = ""
+
+st.sidebar.subheader("Credentials")
+st.sidebar.text_input(
+    "OpenAI API Key",
+    type="password",
+    key="openai_api_key_input",
+    help="Paste your OpenAI API key. It will be used to run the LangGraph agents.",
+)
+st.sidebar.divider()
+
 st.title("QuLab: Lab 10: LangGraph Multi-Agent Orchestration")
 st.divider()
 
 # --- Helper Functions ---
+
+
 def run_async_function(func, *args, **kwargs):
     """
     Helper function to run an async function synchronously.
@@ -27,6 +46,7 @@ def run_async_function(func, *args, **kwargs):
     even if an event loop is already running, simplifying this function.
     """
     return asyncio.run(func(*args, **kwargs))
+
 
 # --- Session State Initialization ---
 if "current_page" not in st.session_state:
@@ -52,6 +72,98 @@ if "company_history_id_input" not in st.session_state:
 if "company_memories" not in st.session_state:
     st.session_state["company_memories"] = None
 
+# --- NEW: Graph + Trace Manager in session state (uses refactored source.py) ---
+if "dd_graph" not in st.session_state:
+    st.session_state["dd_graph"] = None
+if "dd_trace_manager" not in st.session_state:
+    st.session_state["dd_trace_manager"] = None
+if "sec_user_agent_input" not in st.session_state:
+    st.session_state["sec_user_agent_input"] = 'SynergyCapital/1.0 (sarah@synergycapital.com)'
+if "serpapi_api_key_input" not in st.session_state:
+    st.session_state["serpapi_api_key_input"] = ""
+if "careers_url_input" not in st.session_state:
+    st.session_state["careers_url_input"] = ""
+
+# Sidebar inputs for SEC + jobs provider (needed by refactored source tools)
+st.sidebar.subheader("Data Source Settings")
+st.sidebar.text_input(
+    "SEC User-Agent (with contact email)",
+    key="sec_user_agent_input",
+    help='Required by SEC EDGAR endpoints. Example: "SynergyCapital/1.0 (sarah@synergycapital.com)"',
+)
+st.sidebar.text_input(
+    "SerpAPI Key (optional, improves job postings)",
+    type="password",
+    key="serpapi_api_key_input",
+    help="Optional. If set, job postings analysis uses SerpAPI Google Jobs.",
+)
+st.sidebar.text_input(
+    "Careers URL (optional fallback)",
+    key="careers_url_input",
+    help="Optional fallback if SerpAPI is not provided. Example: https://company.com/careers",
+)
+st.sidebar.divider()
+
+# Build or rebuild the graph when API key is available/changes
+if "last_openai_key_used" not in st.session_state:
+    st.session_state["last_openai_key_used"] = None
+if "last_sec_user_agent_used" not in st.session_state:
+    st.session_state["last_sec_user_agent_used"] = None
+if "last_serpapi_key_used" not in st.session_state:
+    st.session_state["last_serpapi_key_used"] = None
+if "last_careers_url_used" not in st.session_state:
+    st.session_state["last_careers_url_used"] = None
+
+
+def ensure_graph_initialized() -> bool:
+    """
+    Initialize (or re-initialize) the LangGraph workflow from refactored source.py.
+    Returns True if ready, False otherwise.
+    """
+    openai_key = st.session_state.get("openai_api_key_input", "").strip()
+    sec_ua = st.session_state.get("sec_user_agent_input", "").strip()
+    serp = st.session_state.get("serpapi_api_key_input", "").strip() or None
+    careers_url = st.session_state.get("careers_url_input", "").strip() or None
+
+    if not openai_key:
+        st.warning(
+            "Please enter your OpenAI API key in the sidebar to run assessments.")
+        return False
+    if not sec_ua:
+        st.warning(
+            "Please enter a valid SEC User-Agent (with contact email) in the sidebar.")
+        return False
+
+    needs_rebuild = (
+        st.session_state["dd_graph"] is None
+        or st.session_state["last_openai_key_used"] != openai_key
+        or st.session_state["last_sec_user_agent_used"] != sec_ua
+        or st.session_state["last_serpapi_key_used"] != serp
+        or st.session_state["last_careers_url_used"] != careers_url
+    )
+
+    if needs_rebuild:
+        try:
+            graph, trace_mgr = create_due_diligence_graph(
+                openai_api_key=openai_key,
+                sec_user_agent=sec_ua,
+                serpapi_api_key=serp,
+                careers_url=careers_url,
+            )
+            st.session_state["dd_graph"] = graph
+            st.session_state["dd_trace_manager"] = trace_mgr
+
+            st.session_state["last_openai_key_used"] = openai_key
+            st.session_state["last_sec_user_agent_used"] = sec_ua
+            st.session_state["last_serpapi_key_used"] = serp
+            st.session_state["last_careers_url_used"] = careers_url
+        except Exception as e:
+            st.error(f"Failed to initialize workflow graph: {e}")
+            return False
+
+    return True
+
+
 # --- Source Module Initialization ---
 # The error message "SyntaxError: 'await' outside function (source.py, line 981)"
 # indicates that `source.py` had a top-level `await verify_agent_memory()`.
@@ -72,27 +184,41 @@ if "source_module_initialized" not in st.session_state:
             st.session_state["source_module_initialized"] = True
             # Optional: st.success("Agent memory verified successfully.")
         else:
-            st.warning("Warning: 'verify_agent_memory' function not found or not an async function after importing 'source'. Skipping initialization.")
-            st.session_state["source_module_initialized"] = True # Mark as initialized to prevent repeated warnings
+            st.warning(
+                "Warning: 'verify_agent_memory' function not found or not an async function after importing 'source'. Skipping initialization.")
+            # Mark as initialized to prevent repeated warnings
+            st.session_state["source_module_initialized"] = True
     except NameError:
         st.error("Initialization error: 'verify_agent_memory' was not found during source module setup. Ensure it's defined in source.py.")
-        st.session_state["source_module_initialized"] = True # Prevent repeated errors on rerun
+        # Prevent repeated errors on rerun
+        st.session_state["source_module_initialized"] = True
     except Exception as e:
         st.error(f"Error during source module initialization: {e}")
-        st.session_state["source_module_initialized"] = True # Prevent repeated errors on rerun
+        # Prevent repeated errors on rerun
+        st.session_state["source_module_initialized"] = True
 
 # --- Callbacks ---
+
+
 def start_assessment_callback():
     st.session_state["current_page"] = "assessment_details"
+
+    if not ensure_graph_initialized():
+        st.session_state["latest_workflow_state"] = None
+        return
+
     thread_id = f"dd-{st.session_state['company_id_input'].replace(' ', '_').lower()}-{datetime.utcnow().isoformat(timespec='seconds')}"
     st.session_state["latest_thread_id"] = thread_id
+
     with st.spinner("Starting multi-agent due diligence workflow..."):
         workflow_state = run_async_function(
             run_due_diligence,
+            graph=st.session_state["dd_graph"],
+            trace_manager=st.session_state["dd_trace_manager"],
             company_id=st.session_state["company_id_input"],
             assessment_type=st.session_state["assessment_type_input"],
             requested_by=st.session_state["requested_by_input"],
-            thread_id=st.session_state["latest_thread_id"]
+            thread_id=st.session_state["latest_thread_id"],
         )
         st.session_state["latest_workflow_state"] = workflow_state
         if workflow_state.get("approval_status") == "pending":
@@ -102,18 +228,24 @@ def start_assessment_callback():
         else:
             st.success("Workflow completed successfully.")
 
+
 def submit_approval_callback():
     if not st.session_state["latest_thread_id"]:
         st.error("No active workflow to approve.")
         return
-    
+
+    if not ensure_graph_initialized():
+        return
+
     with st.spinner(f"Submitting HITL decision '{st.session_state['hitl_decision']}'..."):
         updated_state = run_async_function(
             approve_workflow,
+            graph=st.session_state["dd_graph"],
+            trace_manager=st.session_state["dd_trace_manager"],
             thread_id=st.session_state["latest_thread_id"],
             approved_by=st.session_state["hitl_approval_by"],
             decision=st.session_state["hitl_decision"],
-            notes=st.session_state["hitl_notes"]
+            notes=st.session_state["hitl_notes"],
         )
         st.session_state["latest_workflow_state"] = updated_state
         if updated_state.get("approval_status") == "approved":
@@ -122,6 +254,7 @@ def submit_approval_callback():
             st.error("Workflow rejected and terminated.")
         else:
             st.info("HITL decision processed, workflow state updated.")
+
 
 def store_outcome_callback():
     if not st.session_state["latest_workflow_state"]:
@@ -132,21 +265,31 @@ def store_outcome_callback():
     company_id = state.get("company_id")
     assessment_type = state.get("assessment_type")
     final_score = state.get("scoring_result", {}).get("final_score", 0.0)
-    
+
     # Summarize key findings for memory
     key_findings = []
     if state.get("sec_analysis", {}).get("findings"):
-        key_findings.append(f"SEC Analysis: {state['sec_analysis']['findings'][:100]}...")
+        key_findings.append(
+            f"SEC Analysis: {state['sec_analysis']['findings'][:100]}...")
     if state.get("talent_analysis", {}).get("ai_role_count"):
-        key_findings.append(f"Talent Analysis: {state['talent_analysis']['ai_role_count']} AI roles, {state['talent_analysis']['talent_concentration']:.1%} talent concentration.")
+        key_findings.append(
+            f"Talent Analysis: {state['talent_analysis']['ai_role_count']} AI roles, {state['talent_analysis']['talent_concentration']:.1%} talent concentration.")
     if state.get("value_creation_plan", {}).get("initiatives"):
-        initiatives = [f"{i['name']} (Impact: {i['impact']})" for i in state['value_creation_plan']['initiatives']]
-        key_findings.append(f"Value Creation Initiatives: {'; '.join(initiatives)}.")
+        # NOTE: refactored source uses impact_points / cost_mm; keep UI robust.
+        initiatives = []
+        for i in state["value_creation_plan"]["initiatives"]:
+            name = i.get("name", "Initiative")
+            impact = i.get("impact") or i.get("impact_points") or "N/A"
+            initiatives.append(f"{name} (Impact: {impact})")
+        key_findings.append(
+            f"Value Creation Initiatives: {'; '.join(initiatives)}.")
     if state.get("approval_reason"):
-        key_findings.append(f"HITL triggered due to: {state['approval_reason']}.")
+        key_findings.append(
+            f"HITL triggered due to: {state['approval_reason']}.")
 
     if not key_findings:
-        key_findings.append("No specific key findings generated during assessment.")
+        key_findings.append(
+            "No specific key findings generated during assessment.")
 
     with st.spinner("Storing assessment outcome in Mem0..."):
         run_async_function(
@@ -155,15 +298,17 @@ def store_outcome_callback():
             assessment_type=assessment_type,
             final_score=final_score,
             key_findings=key_findings,
-            user_id=st.session_state["requested_by_input"]
+            user_id=st.session_state["requested_by_input"],
         )
     st.success(f"Assessment outcome for '{company_id}' stored in Mem0!")
+
 
 def view_history_callback():
     if st.session_state["latest_workflow_state"]:
         st.session_state["company_history_id_input"] = st.session_state["latest_workflow_state"]["company_id"]
     st.session_state["current_page"] = "company_history"
-    load_company_history_callback() 
+    load_company_history_callback()
+
 
 def load_company_history_callback():
     if not st.session_state["company_history_id_input"]:
@@ -174,14 +319,16 @@ def load_company_history_callback():
         memories = run_async_function(
             agent_memory.get_company_context,
             company_id=st.session_state["company_history_id_input"],
-            user_id=st.session_state["requested_by_input"] 
+            user_id=st.session_state["requested_by_input"],
         )
         st.session_state["company_memories"] = memories
     st.success("Company history loaded!")
 
+
 # --- Streamlit Application Layout ---
 st.sidebar.title("Navigation")
-page_options = ["Home", "New Assessment", "Assessment Details", "Company History"]
+page_options = ["Home", "New Assessment",
+                "Assessment Details", "Company History"]
 current_selection = "Home"
 
 if st.session_state["current_page"] == "new_assessment":
@@ -198,21 +345,28 @@ page_selection = st.sidebar.radio(
 )
 
 # Update current_page based on sidebar selection
-if page_selection == "Home": st.session_state["current_page"] = "home"
-elif page_selection == "New Assessment": st.session_state["current_page"] = "new_assessment"
-elif page_selection == "Assessment Details": st.session_state["current_page"] = "assessment_details"
-elif page_selection == "Company History": st.session_state["current_page"] = "company_history"
+if page_selection == "Home":
+    st.session_state["current_page"] = "home"
+elif page_selection == "New Assessment":
+    st.session_state["current_page"] = "new_assessment"
+elif page_selection == "Assessment Details":
+    st.session_state["current_page"] = "assessment_details"
+elif page_selection == "Company History":
+    st.session_state["current_page"] = "company_history"
 
 # --- Main Content Area ---
 if st.session_state["current_page"] == "home":
     st.title("AI-Powered Due Diligence for Private Equity")
     st.markdown(f"")
 
-    st.markdown(f"## Introduction: Empowering PE Analysts with AI-Driven Insights")
+    st.markdown(
+        f"## Introduction: Empowering PE Analysts with AI-Driven Insights")
     st.markdown(f"")
-    st.markdown(f"**Persona:** Sarah, a Software Developer at \"Synergy Capital,\" a forward-thinking Private Equity (PE) firm.")
+    st.markdown(
+        f"**Persona:** Sarah, a Software Developer at \"Synergy Capital,\" a forward-thinking Private Equity (PE) firm.")
     st.markdown(f"")
-    st.markdown(f"**Organization:** Synergy Capital, specializing in acquiring and growing technology companies.")
+    st.markdown(
+        f"**Organization:** Synergy Capital, specializing in acquiring and growing technology companies.")
     st.markdown(f"")
     st.markdown(f"Sarah's team is tasked with modernizing Synergy Capital's initial due diligence process. Currently, PE analysts spend significant time manually sifting through financial filings, talent reports, and market data to assess potential target companies. This is time-consuming and prone to inconsistencies, delaying critical investment decisions.")
     st.markdown(f"")
@@ -230,7 +384,8 @@ if st.session_state["current_page"] == "home":
     st.markdown(f"- Semantic memory with Mem0")
     st.markdown(f"- Agent debug traces")
     st.markdown(f"")
-    st.markdown(f"Navigate using the sidebar to start a new assessment or view company history.")
+    st.markdown(
+        f"Navigate using the sidebar to start a new assessment or view company history.")
 
 elif st.session_state["current_page"] == "new_assessment":
     st.title("Initiate New Due Diligence Assessment")
@@ -238,19 +393,28 @@ elif st.session_state["current_page"] == "new_assessment":
     st.markdown(f"Enter the details for the company you wish to assess. The multi-agent workflow will analyze the company's AI-readiness and generate a comprehensive report.")
     st.markdown(f"")
 
-    st.text_input("Company ID", value=st.session_state["company_id_input"], key="company_id_input")
-    
+    st.text_input(
+        "Company ID", value=st.session_state["company_id_input"], key="company_id_input")
+
     assessment_options = ["screening", "limited", "full"]
     st.selectbox(
-        "Assessment Type", 
-        assessment_options, 
-        index=assessment_options.index(st.session_state["assessment_type_input"]),
+        "Assessment Type",
+        assessment_options,
+        index=assessment_options.index(
+            st.session_state["assessment_type_input"]),
         key="assessment_type_input"
     )
-    
-    st.text_input("Requested By", value=st.session_state["requested_by_input"], key="requested_by_input")
 
-    st.button("Start Assessment", on_click=start_assessment_callback, type="primary")
+    st.text_input(
+        "Requested By", value=st.session_state["requested_by_input"], key="requested_by_input")
+
+    # Optional warning if key is missing (don’t block navigation)
+    if not st.session_state.get("openai_api_key_input", "").strip():
+        st.warning(
+            "OpenAI API key is required to run an assessment. Add it in the sidebar.")
+
+    st.button("Start Assessment",
+              on_click=start_assessment_callback, type="primary")
 
 elif st.session_state["current_page"] == "assessment_details":
     st.title("Due Diligence Assessment Details")
@@ -267,14 +431,18 @@ elif st.session_state["current_page"] == "assessment_details":
         st.markdown(f"### Workflow Status for {current_state['company_id']}")
         st.markdown(f"")
         if current_state.get("approval_status") == "pending" and current_state.get("requires_approval"):
-            st.warning(f"**Workflow Paused for Human-in-the-Loop (HITL) Approval!**")
-            st.markdown(f"**Reason:** {current_state.get('approval_reason', 'N/A')}")
+            st.warning(
+                f"**Workflow Paused for Human-in-the-Loop (HITL) Approval!**")
+            st.markdown(
+                f"**Reason:** {current_state.get('approval_reason', 'N/A')}")
         elif current_state.get("error"):
-            st.error(f"**Workflow Ended with Error:** {current_state['error']}")
+            st.error(
+                f"**Workflow Ended with Error:** {current_state['error']}")
         elif current_state.get("completed_at"):
             st.success(f"**Workflow Completed Successfully!**")
         else:
-            st.info(f"**Workflow is currently running or pending.** (Last update: {current_state['started_at'].strftime('%Y-%m-%d %H:%M:%S')})")
+            st.info(
+                f"**Workflow is currently running or pending.** (Last update: {current_state['started_at'].strftime('%Y-%m-%d %H:%M:%S')})")
         st.markdown(f"")
 
         # Display SEC Analysis
@@ -284,8 +452,10 @@ elif st.session_state["current_page"] == "assessment_details":
             sec_data = current_state["sec_analysis"]
             st.markdown(f"- **Company ID:** {sec_data.get('company_id')}")
             st.markdown(f"- **Findings Summary:** {sec_data.get('findings')}")
-            st.markdown(f"- **Evidence Count:** {sec_data.get('evidence_count')}")
-            st.markdown(f"- **Dimensions Covered:** {', '.join(sec_data.get('dimensions_covered', []))}")
+            st.markdown(
+                f"- **Evidence Count:** {sec_data.get('evidence_count')}")
+            st.markdown(
+                f"- **Dimensions Covered:** {', '.join(sec_data.get('dimensions_covered', []))}")
             st.markdown(f"- **Confidence:** {sec_data.get('confidence')}")
             st.markdown(f"")
 
@@ -295,11 +465,16 @@ elif st.session_state["current_page"] == "assessment_details":
             st.markdown(f"")
             talent_data = current_state["talent_analysis"]
             st.markdown(f"- **Company ID:** {talent_data.get('company_id')}")
-            st.markdown(f"- **AI Role Count:** {talent_data.get('ai_role_count')}")
-            st.markdown(f"- **Talent Concentration:** {talent_data.get('talent_concentration', 0.0):.2%}")
-            st.markdown(f"- **Seniority Index:** {talent_data.get('seniority_index', 0.0):.1f}")
-            st.markdown(f"- **Key Skills:** {', '.join(talent_data.get('key_skills', []))}")
-            st.markdown(f"- **Hiring Trend:** {talent_data.get('hiring_trend')}")
+            st.markdown(
+                f"- **AI Role Count:** {talent_data.get('ai_role_count')}")
+            st.markdown(
+                f"- **Talent Concentration:** {talent_data.get('talent_concentration', 0.0):.2%}")
+            st.markdown(
+                f"- **Seniority Index:** {talent_data.get('seniority_index', 0.0):.1f}")
+            st.markdown(
+                f"- **Key Skills:** {', '.join(talent_data.get('key_skills', []))}")
+            st.markdown(
+                f"- **Hiring Trend:** {talent_data.get('hiring_trend')}")
             st.markdown(f"")
 
         # Display Scoring Result
@@ -311,8 +486,10 @@ elif st.session_state["current_page"] == "assessment_details":
             st.markdown(f"- **Final Org-AI-R Score:** **{final_score:.1f}**")
             st.markdown(f"- **Details:** {scoring_data.get('details', 'N/A')}")
             st.markdown(f"")
-            st.markdown(r"$$ (S < S_{\text{min}}) \lor (S > S_{\text{max}}) $$")
-            st.markdown(r"where $S$ is the Org-AI-R score, $S_{\text{min}}=40$, and $S_{\text{max}}=85$.")
+            st.markdown(
+                r"$$ (S < S_{\text{min}}) \lor (S > S_{\text{max}}) $$")
+            st.markdown(
+                r"where $S$ is the Org-AI-R score, $S_{\text{min}}=40$, and $S_{\text{max}}=85$.")
             st.markdown(f"")
 
         # Display Value Creation Plan
@@ -320,17 +497,29 @@ elif st.session_state["current_page"] == "assessment_details":
             st.markdown(f"### 💰 Value Creation Plan")
             st.markdown(f"")
             value_data = current_state["value_creation_plan"]
-            st.markdown(f"- **Current Org-AI-R Score:** {value_data.get('current_score', 0.0):.1f}")
-            st.markdown(f"- **Target Org-AI-R Score:** {value_data.get('target_score', 0.0):.1f}")
-            st.markdown(f"- **Projected EBITDA Impact:** **{value_data.get('projected_ebitda_impact_pct', 0.0):.1%}**")
-            st.markdown(f"- **Timeline (Months):** {value_data.get('timeline_months')}")
+            st.markdown(
+                f"- **Current Org-AI-R Score:** {value_data.get('current_score', 0.0):.1f}")
+            st.markdown(
+                f"- **Target Org-AI-R Score:** {value_data.get('target_score', 0.0):.1f}")
+            st.markdown(
+                f"- **Projected EBITDA Impact:** **{value_data.get('projected_ebitda_impact_pct', 0.0):.1%}**")
+            st.markdown(
+                f"- **Timeline (Months):** {value_data.get('timeline_months')}")
             st.markdown(f"- **Key Initiatives:**")
             st.markdown(f"")
             for initiative in value_data.get('initiatives', []):
-                st.markdown(f"  - **{initiative.get('name')}**: Impact: {initiative.get('impact')}, Cost: ${initiative.get('cost_mm', 0.0):.1f}M")
+                # Support both old and new initiative fields
+                name = initiative.get('name')
+                impact = initiative.get('impact') if initiative.get(
+                    'impact') is not None else initiative.get('impact_points')
+                cost = initiative.get('cost_mm', 0.0)
+                st.markdown(
+                    f"  - **{name}**: Impact: {impact}, Cost: ${cost:.1f}M")
             st.markdown(f"")
-            st.markdown(r"$$ I > \text{settings.HITL\_EBITDA\_PROJECTION\_THRESHOLD} $$")
-            st.markdown(r"where $I$ is the projected EBITDA impact and $\text{settings.HITL\_EBITDA\_PROJECTION\_THRESHOLD}$ is a predefined threshold (e.g., 7%).")
+            st.markdown(
+                r"$$ I > \text{settings.HITL\_EBITDA\_PROJECTION\_THRESHOLD} $$")
+            st.markdown(
+                r"where $I$ is the projected EBITDA impact and $\text{settings.HITL\_EBITDA\_PROJECTION\_THRESHOLD}$ is a predefined threshold (e.g., 7%).")
             st.markdown(f"")
 
         # HITL Approval Section
@@ -338,43 +527,51 @@ elif st.session_state["current_page"] == "assessment_details":
             st.markdown(f"---")
             st.subheader("Human-in-the-Loop (HITL) Approval Required")
             st.markdown(f"")
-            st.warning(f"The workflow for '{current_state['company_id']}' requires your review before proceeding.")
-            st.markdown(f"**Reason for HITL:** {current_state.get('approval_reason', 'N/A')}")
+            st.warning(
+                f"The workflow for '{current_state['company_id']}' requires your review before proceeding.")
+            st.markdown(
+                f"**Reason for HITL:** {current_state.get('approval_reason', 'N/A')}")
             st.markdown(f"")
 
-            st.text_input("Approved By", value=st.session_state["hitl_approval_by"], key="hitl_approval_by")
-            
+            st.text_input(
+                "Approved By", value=st.session_state["hitl_approval_by"], key="hitl_approval_by")
+
             decision_options = ["approved", "rejected"]
             st.radio(
-                "Decision", 
-                decision_options, 
-                index=0 if st.session_state["hitl_decision"] == "approved" else 1, 
+                "Decision",
+                decision_options,
+                index=0 if st.session_state["hitl_decision"] == "approved" else 1,
                 key="hitl_decision"
             )
-            
-            st.text_area("Notes", value=st.session_state["hitl_notes"], key="hitl_notes")
 
-            st.button("Submit Approval", on_click=submit_approval_callback, type="secondary")
+            st.text_area(
+                "Notes", value=st.session_state["hitl_notes"], key="hitl_notes")
+
+            st.button("Submit Approval",
+                      on_click=submit_approval_callback, type="secondary")
             st.markdown(f"")
 
         # Workflow Trace Visualization
         st.markdown(f"---")
         st.subheader("Agent Workflow Trace")
         st.markdown(f"")
-        st.markdown(f"This diagram visualizes the execution path of the multi-agent system, including any HITL pauses.")
+        st.markdown(
+            f"This diagram visualizes the execution path of the multi-agent system, including any HITL pauses.")
         st.markdown(f"")
-        
+
         trace_id_for_mermaid = current_state.get("trace_id")
         if trace_id_for_mermaid:
-            # Check if global_trace_manager is available (imported from source)
-            if "global_trace_manager" in globals():
-                current_trace = global_trace_manager.get_trace(trace_id_for_mermaid)
+            trace_mgr = st.session_state.get("dd_trace_manager")
+            if trace_mgr:
+                current_trace = trace_mgr.get_trace(trace_id_for_mermaid)
                 if current_trace:
                     st.markdown(current_trace.to_mermaid())
                 else:
-                    st.info(f"Trace for ID {trace_id_for_mermaid} not found in manager. It might have already been moved to completed traces.")
+                    st.info(
+                        f"Trace for ID {trace_id_for_mermaid} not found in manager. It might have already been moved to completed traces.")
             else:
-                st.warning("global_trace_manager not found. Cannot display workflow trace.")
+                st.warning(
+                    "Trace manager not initialized. Run an assessment after setting the OpenAI key.")
         else:
             st.info("No trace ID available for this workflow.")
         st.markdown(f"")
@@ -383,23 +580,29 @@ elif st.session_state["current_page"] == "assessment_details":
         if not current_state.get("requires_approval") and current_state.get("completed_at") and not current_state.get("error"):
             col1, col2 = st.columns(2)
             with col1:
-                st.button("Store Outcome in Mem0", on_click=store_outcome_callback, type="secondary")
+                st.button("Store Outcome in Mem0",
+                          on_click=store_outcome_callback, type="secondary")
             with col2:
-                st.button("View Company History", on_click=view_history_callback, type="secondary")
+                st.button("View Company History",
+                          on_click=view_history_callback, type="secondary")
             st.markdown(f"")
 
 elif st.session_state["current_page"] == "company_history":
     st.title("Company Assessment History")
     st.markdown(f"")
-    st.markdown(f"Retrieve past assessment outcomes and contextual information for a specific company from Mem0.")
+    st.markdown(
+        f"Retrieve past assessment outcomes and contextual information for a specific company from Mem0.")
     st.markdown(f"")
 
-    st.text_input("Company ID for History", value=st.session_state["company_history_id_input"], key="company_history_id_input")
-    st.button("Load Company History", on_click=load_company_history_callback, type="primary")
+    st.text_input("Company ID for History",
+                  value=st.session_state["company_history_id_input"], key="company_history_id_input")
+    st.button("Load Company History",
+              on_click=load_company_history_callback, type="primary")
     st.markdown(f"")
 
     if st.session_state["company_memories"]:
-        st.subheader(f"Memories for {st.session_state['company_memories']['company_id']}")
+        st.subheader(
+            f"Memories for {st.session_state['company_memories']['company_id']}")
         st.markdown(f"")
         if st.session_state["company_memories"]['memory_count'] > 0:
             for i, mem in enumerate(st.session_state["company_memories"]["memories"]):
@@ -415,10 +618,10 @@ elif st.session_state["current_page"] == "company_history":
                 st.markdown(f"---")
                 st.markdown(f"")
         else:
-            st.info(f"No historical memories found for '{st.session_state['company_history_id_input']}'.")
+            st.info(
+                f"No historical memories found for '{st.session_state['company_history_id_input']}'.")
     else:
         st.info("No company history loaded yet.")
-
 
 
 # License

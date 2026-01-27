@@ -8,7 +8,6 @@ scipy
 seaborn
 plotly
 requests
--qU
 langgraph
 langchain-openai
 langchain-anthropic
@@ -16,3 +15,4 @@ mem0ai
 structlog
 python-dotenv
 typer
+nest-asyncio
