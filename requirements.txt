@@ -16,3 +16,5 @@ structlog
 python-dotenv
 typer
 nest-asyncio
+openai
+streamlit-mermaid
