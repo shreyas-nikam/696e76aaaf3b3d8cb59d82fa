@@ -625,8 +625,7 @@ if have_openai_key():
     set_openai_env()
     st.sidebar.success("OpenAI key loaded into session.")
 else:
-    st.sidebar.info(
-        "Add a key to enable any optional LLM calls (demo works without it).")
+    pass
 
 st.sidebar.divider()
 st.sidebar.markdown("**Demo Controls**")
